@@ -72,6 +72,8 @@ pub struct Glyph {
     /// Part of the bullet or number the paragraph's list adds: not the line's own text, so it
     /// doesn't raise the Ascent first baseline.
     pub list_label: bool,
+    /// Tracking added after this glyph's cluster (InDesign drops it after a line's last glyph).
+    pub trail: f64,
 }
 
 impl Glyph {
@@ -893,6 +895,7 @@ fn control_glyph(face: &Arc<FontFace>, p: &CharProps, auto_leading: TypeEnv, sty
         lang: designcraft_doc::language_tag(&p.language),
         upright: false,
         list_label: false,
+        trail: 0.0,
     }
 }
 
@@ -955,6 +958,7 @@ fn shape_segment(
             (cl, end.saturating_sub(cl), text[cl..].chars().next().unwrap_or(' '))
         };
         let last_in_cluster = gi + 1 == n || shaped[gi + 1].cluster != sg.cluster;
+        let tracked = last_in_cluster && ch != SOFT_HYPHEN;
         // Upright: down the line is the shaper's -y, across it (text space -y) its x.
         let mut adv = if up { -(sg.y_advance as f64) * k_v } else { sg.x_advance as f64 * k * hs };
         let (dx, dy) = if up {
@@ -965,7 +969,7 @@ fn shape_segment(
         let (ascent, descent) = if up { (em_top * k_v, -em_bottom * k_v) } else { (ascent, descent) };
         if ch == SOFT_HYPHEN {
             adv = 0.0;
-        } else if last_in_cluster {
+        } else if tracked {
             adv += tracking + manual;
         }
         // Only the first glyph of a cluster owns the bytes (so ranges partition the text).
@@ -1017,6 +1021,7 @@ fn shape_segment(
             lang,
             upright: up,
             list_label: false,
+            trail: if tracked { tracking } else { 0.0 },
         });
     }
 }
