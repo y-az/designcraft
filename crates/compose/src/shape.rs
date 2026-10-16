@@ -369,14 +369,21 @@ pub(crate) fn shape_para(
 }
 
 /// Combining marks that start a run are shaped with the letter before them when the two runs
-/// differ only in OpenType features (ligatures, kerning, `otf_features`): the shaper attaches each
-/// mark to its base, in its base's face. A run in another font, size or colour keeps its marks.
+/// differ only in OpenType features (ligatures, kerning, `otf_features`, a forced positional
+/// form): the shaper attaches each mark to its base, in its base's face. A run in another font,
+/// size or colour keeps its marks.
 fn marks_join_their_base<'f>(
     text: &str,
     resolved: Vec<(usize, usize, CharProps, &'f designcraft_doc::CharFormat, CharProps)>,
 ) -> Vec<(usize, usize, CharProps, &'f designcraft_doc::CharFormat, CharProps)> {
     let same_but_features = |a: &CharProps, b: &CharProps| {
-        *b == CharProps { ligatures: b.ligatures, kerning: b.kerning, otf_features: b.otf_features.clone(), ..a.clone() }
+        *b == CharProps {
+            ligatures: b.ligatures,
+            kerning: b.kerning,
+            otf_features: b.otf_features.clone(),
+            positional_form: b.positional_form.clone(),
+            ..a.clone()
+        }
     };
     let is_base = |c: char| !c.is_whitespace() && !c.is_control() && !matches!(c, designcraft_doc::FOOTNOTE_REF | designcraft_doc::ENDNOTE_REF);
     let mut out: Vec<(usize, usize, CharProps, &designcraft_doc::CharFormat, CharProps)> = Vec::with_capacity(resolved.len());
@@ -471,17 +478,10 @@ fn features_for(p: &CharProps) -> Vec<Feature> {
     for f in &p.otf_features {
         v.extend(feature(f));
     }
-    let positional = match p.positional_form.as_str() {
-        "Initial" => Some("init"),
-        "Medial" => Some("medi"),
-        "Final" => Some("fina"),
-        "Isolated" => Some("isol"),
-        _ => None,
-    };
-    if let Some(tag) = positional {
-        for form in ["isol", "init", "medi", "fina"] {
-            v.extend(feature(&format!("{}{}", if form == tag { "" } else { "-" }, form)));
-        }
+    // Isolated breaks the letter's joins. Initial, Medial and Final don't override the joins the
+    // text calls for: InDesign draws a word-final letter set to Medial in its final form.
+    if p.positional_form == "Isolated" {
+        v.extend(["isol", "-init", "-medi", "-fina"].into_iter().flat_map(feature));
     }
     v
 }
