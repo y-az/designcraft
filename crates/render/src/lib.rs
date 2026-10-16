@@ -413,7 +413,17 @@ impl Renderer {
             };
             for (pi, items) in shown.iter().enumerate() {
                 for s in items.iter().filter(|s| s.item.layer == layer.id) {
-                    self.draw_item(ctx, f, s.item, Affine::translate((s.dx, 0.0)), shown_on(pi));
+                    let xf = Affine::translate((s.dx, 0.0));
+                    match s.clip_x {
+                        // Crossing the spine: cut to this page's side.
+                        Some((x0, x1)) => {
+                            let b = sp.bounds();
+                            push_cut(ctx, f.view, Rect::new(x0, b.y0 - 1.0e4, x1, b.y1 + 1.0e4));
+                            self.draw_item(ctx, f, s.item, xf, shown_on(pi));
+                            ctx.pop_layer();
+                        }
+                        None => self.draw_item(ctx, f, s.item, xf, shown_on(pi)),
+                    }
                 }
             }
             for it in &sp.items {
@@ -837,6 +847,21 @@ fn plate_pixmap(pm: &std::sync::Arc<vello_cpu::Pixmap>, plate: u8) -> std::sync:
 
 fn rect_overlaps(a: Rect, b: Rect) -> bool {
     a.x0 < b.x1 && a.x1 > b.x0 && a.y0 < b.y1 && a.y1 > b.y0
+}
+
+/// Clip to `r` (spread space) until the matching `pop_layer`. Where the view keeps rectangles
+/// upright the clip is snapped to whole device pixels, so the two halves of a parent item cut at
+/// the spine meet without an anti-aliased seam.
+fn push_cut(ctx: &mut RenderContext, view: Affine, r: Rect) {
+    let [a, b, c, d, _, _] = view.as_coeffs();
+    if (b == 0.0 && c == 0.0) || (a == 0.0 && d == 0.0) {
+        let dr = view.transform_rect_bbox(r);
+        ctx.set_transform(Affine::IDENTITY);
+        ctx.push_clip_layer(&Rect::new(dr.x0.round(), dr.y0.round(), dr.x1.round(), dr.y1.round()).to_path(0.1));
+    } else {
+        ctx.set_transform(view);
+        ctx.push_clip_layer(&r.to_path(0.1));
+    }
 }
 
 thread_local! {

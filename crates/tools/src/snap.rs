@@ -8,6 +8,7 @@
 
 use std::collections::HashSet;
 
+use designcraft_doc::build::ShownParentItem;
 use designcraft_doc::{Document, Item, ItemId, Orientation, Selection, SpreadRef, StrokeAlign};
 use designcraft_geom::snap::snap_to_grid;
 use designcraft_geom::{Affine, Point, Rect, Vec2, format_measure};
@@ -219,8 +220,8 @@ fn push_parent_rotations(
     proposed: f64,
     tol: f64,
 ) {
-    for (item, _) in shown_parent_items(cx.doc, req.spread) {
-        push_rotation(best, cx.selection, req, item, Affine::IDENTITY, false, 0, seen_items, proposed, tol);
+    for shown in shown_parent_items(cx.doc, req.spread) {
+        push_rotation(best, cx.selection, req, shown.item, Affine::IDENTITY, false, 0, seen_items, proposed, tol);
     }
 }
 
@@ -973,8 +974,8 @@ fn stroke_outset(item: &Item) -> f64 {
 }
 
 fn push_parent_lengths(out: &mut Vec<f64>, cx: &ToolContext, req: &SnapRequest<'_>, seen_items: &mut HashSet<ItemId>) {
-    for (item, _) in shown_parent_items(cx.doc, req.spread) {
-        push_own_lengths(out, cx.selection, req, item, Affine::IDENTITY, false, 0, seen_items);
+    for shown in shown_parent_items(cx.doc, req.spread) {
+        push_own_lengths(out, cx.selection, req, shown.item, Affine::IDENTITY, false, 0, seen_items);
     }
 }
 
@@ -1145,18 +1146,26 @@ fn group_box(item: &Item, seen: &mut HashSet<ItemId>, depth: usize, filter: Opti
 
 /// Parent items shown on the spread, shifted into that spread's space.
 fn offer_parent_items(best: &mut Option<Best>, cx: &ToolContext, req: &SnapRequest<'_>, flags: [bool; 3], axis: Axis, tol: f64) {
-    for (item, dx) in shown_parent_items(cx.doc, req.spread) {
-        let Some(rect) = item_target_rect(cx.selection, req, item) else { continue };
-        offer_box(best, req.rect, flags, axis, shift_x(rect, dx), tol, cx.snap.align_edges, cx.snap.align_centers);
+    for shown in shown_parent_items(cx.doc, req.spread) {
+        let Some(rect) = item_target_rect(cx.selection, req, shown.item) else { continue };
+        let mut rect = shift_x(rect, shown.dx);
+        // Cut at the spine: only the part on this page's side.
+        if let Some((x0, x1)) = shown.clip_x {
+            rect = Rect::new(rect.x0.max(x0), rect.y0, rect.x1.min(x1), rect.y1);
+            if rect.x0 > rect.x1 {
+                continue;
+            }
+        }
+        offer_box(best, req.rect, flags, axis, rect, tol, cx.snap.align_edges, cx.snap.align_centers);
     }
 }
 
 /// Parent items drawn on `spread`, back to front, each with the x shift from its parent spread:
 /// a document page's parent and its bases, or a parent spread's bases. The renderer's list
 /// ([`Document::shown_parent_items`]) for each page.
-fn shown_parent_items(doc: &Document, spread: SpreadRef) -> Vec<(&Item, f64)> {
+fn shown_parent_items(doc: &Document, spread: SpreadRef) -> Vec<ShownParentItem<'_>> {
     let pages = doc.spread(spread).map_or(0, |sp| sp.pages.len());
-    (0..pages).flat_map(|pi| doc.shown_parent_items(spread, pi)).filter(|s| s.dx.is_finite()).map(|s| (s.item, s.dx)).collect()
+    (0..pages).flat_map(|pi| doc.shown_parent_items(spread, pi)).filter(|s| s.dx.is_finite()).collect()
 }
 
 fn shift_x(r: Rect, dx: f64) -> Rect {

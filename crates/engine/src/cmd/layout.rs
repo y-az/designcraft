@@ -1072,6 +1072,35 @@ mod parent_base_tests {
         assert!(!black(parent_b(&s).pixel(50, 100)) && cyan(parent_b(&s).pixel(300, 100)));
     }
 
+    /// A spread-wide parent item, centred on the right parent page: on a spread whose left page
+    /// applies the parent and whose right page applies another, the left page shows its half, cut
+    /// at the spine. When both pages apply it, the two halves meet without a seam, also with the
+    /// spine between device pixels.
+    #[test]
+    fn a_parent_item_across_the_spine_is_cut_at_the_spine() {
+        let mut s = crate::Session::new();
+        s.execute("file.new", &json!({"width": 300, "height": 300, "pages": 3, "facingPages": true, "margins": 0})).unwrap();
+        s.execute("layout.parents.new", &json!({"prefix": "B"})).unwrap();
+        rect(&mut s, json!({"kind": "parent", "index": 0}), [10.0, 10.0, 590.0, 290.0], "C=100 M=0 Y=0 K=0");
+        let cyan = |p: [u8; 4]| p[0] < 80 && p[1] > 120 && p[2] > 180;
+        let paper = |p: [u8; 4]| p[0] > 240 && p[1] > 240 && p[2] > 240;
+        // Spread [2 3], shifted half a pixel so the spine (x 300) falls inside a device pixel.
+        let spread = |s: &crate::Session| {
+            let mut rr = designcraft_render::Renderer::new();
+            rr.threads = 0;
+            let placed = [designcraft_render::Placed { spread: designcraft_doc::SpreadRef::Doc(1), xf: designcraft_geom::Affine::IDENTITY }];
+            let opts = designcraft_render::RenderOptions { background: Some([255, 255, 255, 255]), ..Default::default() };
+            rr.render(&s.doc().unwrap().doc, &s.cache, &placed, 600, 300, designcraft_geom::Affine::translate((0.5, 0.0)), &opts)
+        };
+        let img = spread(&s);
+        let row: Vec<[u8; 4]> = (295..306).map(|x| img.pixel(x, 150)).collect();
+        assert!(row.iter().all(|p| *p == img.pixel(100, 150)) && cyan(img.pixel(100, 150)), "{row:?}");
+        s.execute("layout.pages.applyParent", &json!({"pages": [2], "parent": "B"})).unwrap();
+        let img = spread(&s);
+        assert!(cyan(img.pixel(100, 150)), "the left page's half: {:?}", img.pixel(100, 150));
+        assert!(paper(img.pixel(310, 150)) && paper(img.pixel(450, 150)), "nothing on the right page: {:?}", img.pixel(450, 150));
+    }
+
     /// A's page-number marker shown on parent XYZ (based on A) reads XYZ, as markers on XYZ's own items do.
     #[test]
     fn base_parent_markers_read_the_showing_parent() {

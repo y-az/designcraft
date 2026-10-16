@@ -601,9 +601,11 @@ impl Document {
 
     /// The parent items drawn behind page `page` of spread `sr`, back to front: the deepest base
     /// parent's first, each parent's in z-order. They are the items of [`Self::shown_parent_pages`]
-    /// on the parent page shown (on a facing parent, the page an item's centre is on), less those
-    /// the page overrides and those a parent page in front of theirs overrides (B based on A hides
-    /// the A items B's page overrides, wherever B shows). Empty when the page hides parent items.
+    /// on the parent page shown, less those the page overrides and those a parent page in front of
+    /// theirs overrides (B based on A hides the A items B's page overrides, wherever B shows).
+    /// Empty when the page hides parent items. On a facing parent an item belongs to every parent
+    /// page it overlaps (one off the pages to the nearest); one crossing the spine shows on each
+    /// page applying such a parent page, cut to that page's side ([`ShownParentItem::clip_x`]).
     /// Drawing, export, hit testing, snapping and overriding all go through this list.
     pub fn shown_parent_items(&self, sr: SpreadRef, page: usize) -> Vec<ShownParentItem<'_>> {
         let Some(pg) = self.spread(sr).and_then(|sp| sp.pages.get(page)) else { return Vec::new() };
@@ -622,14 +624,12 @@ impl Document {
                 .chain(above.iter().filter_map(|&(i, j)| Some(self.parents.get(i)?.pages.get(j)?.overridden.as_slice())))
                 .collect();
             for it in &parent.items {
-                // Parent items belong to the parent page they sit on.
-                if parent.pages.len() > 1 && parent.page_at_x(it.bounds().center().x) != Some(ppage) {
-                    continue;
-                }
+                let b = it.bounds();
+                let Some(clip_x) = parent_page_cut(parent, ppage, b.x0, b.x1, pg) else { continue };
                 if hidden.iter().any(|ids| ids.contains(&it.id)) {
                     continue;
                 }
-                out.push(ShownParentItem { item: it, dx });
+                out.push(ShownParentItem { item: it, dx, clip_x });
             }
         }
         out
@@ -683,6 +683,37 @@ pub struct ShownParentItem<'a> {
     pub item: &'a Item,
     /// x offset from the item's parent spread to the spread showing it.
     pub dx: f64,
+    /// For an item crossing the spine of its parent spread: the x range of the showing spread it
+    /// is cut to (this page's side, open past the spread's outer edges so bleed stays).
+    pub clip_x: Option<(f64, f64)>,
+}
+
+/// How far an open side of a cut parent item reaches past the page (any bleed or pasteboard).
+const OPEN_CUT: f64 = 1.0e4;
+
+/// Whether an item spanning `x0..x1` on parent spread `ps` shows behind page `pg`, which applies
+/// parent page `idx`: `None` if it doesn't, `Some(None)` whole, `Some(Some(range))` cut to the x
+/// range of `pg`'s spread because it also overlaps another page of the parent spread. An item
+/// belongs to every parent page it overlaps; one off the pages belongs to the nearest.
+fn parent_page_cut(ps: &Spread, idx: usize, x0: f64, x1: f64, pg: &Page) -> Option<Option<(f64, f64)>> {
+    if ps.pages.len() <= 1 {
+        return Some(None);
+    }
+    let this = ps.pages.get(idx)?;
+    let overlaps = |p: &Page| x0 < p.x + p.width && x1 > p.x;
+    if !overlaps(this) {
+        let off_the_pages = !ps.pages.iter().any(overlaps);
+        return (off_the_pages && ps.page_at_x((x0 + x1) / 2.0) == Some(idx)).then_some(None);
+    }
+    if ps.pages.iter().enumerate().all(|(j, p)| j == idx || !overlaps(p)) {
+        return Some(None);
+    }
+    // Across the spine: cut at this page's inner edges, open on the spread's outer ones.
+    let leftmost = ps.pages.iter().all(|p| p.x >= this.x);
+    let rightmost = ps.pages.iter().all(|p| p.x <= this.x);
+    let left = if leftmost { pg.x - OPEN_CUT } else { pg.x };
+    let right = if rightmost { pg.x + pg.width + OPEN_CUT } else { pg.x + pg.width };
+    Some(Some((left, right)))
 }
 
 /// Deepest `based_on` chain followed.
@@ -861,6 +892,39 @@ mod tests {
         // A cycle (A based on C, as a damaged file may have it) ends the walk.
         base(&mut d, 0, Some(c));
         assert_eq!(shown(&d, SpreadRef::Doc(1), 1), ids);
+    }
+
+    /// A parent item crossing the spine shows on each document page applying a parent page it
+    /// overlaps, cut at the spine and open towards the outside edge; a page applying another
+    /// parent doesn't show it. An item wholly on one parent page, or off the pages, stays with
+    /// that (nearest) page, uncut.
+    #[test]
+    fn parent_item_across_the_spine_shows_on_both_sides() {
+        let mut d = Document::new(&NewDocument { pages: 3, ..Default::default() });
+        let lid = d.default_layer();
+        // Parent pages: left x 0–612, right x 612–1224. One item across the spine (centre right
+        // of it), one on the right page only, one on the pasteboard left of the left page.
+        let mut ids = Vec::new();
+        for (x0, x1) in [(100.0, 1200.0), (700.0, 800.0), (-200.0, -100.0)] {
+            let r = designcraft_geom::Rect::new(x0, 100.0, x1, 700.0);
+            let id = ItemId(d.alloc());
+            d.insert_item(SpreadRef::Parent(0), Item::new(id, lid, crate::Shape::Rectangle, designcraft_geom::shapes::rectangle(r)), None).unwrap();
+            ids.push(id);
+        }
+        let shown = |d: &Document, page: usize| -> Vec<(ItemId, Option<(f64, f64)>)> {
+            d.shown_parent_items(SpreadRef::Doc(1), page).iter().map(|s| (s.item.id, s.clip_x)).collect()
+        };
+        // Spread [2 3]: page index 0 is the left page (x 0–612), 1 the right (x 612–1224).
+        assert_eq!(shown(&d, 0), vec![(ids[0], Some((-OPEN_CUT, 612.0))), (ids[2], None)]);
+        assert_eq!(shown(&d, 1), vec![(ids[0], Some((612.0, 1224.0 + OPEN_CUT))), (ids[1], None)]);
+        // Page 1, a single right page at x 0, shows the right page's part, moved 612 pt left.
+        let first: Vec<_> = d.shown_parent_items(SpreadRef::Doc(0), 0).iter().map(|s| (s.item.id, s.dx, s.clip_x)).collect();
+        assert_eq!(first, vec![(ids[0], -612.0, Some((0.0, 612.0 + OPEN_CUT))), (ids[1], -612.0, None)]);
+        // The right page applies another parent: the left page still shows its part.
+        let b = d.add_parent("B", "Parent", 1, 0.0, Margins::uniform(36.0));
+        d.apply_parent(&[2], Some(b)).unwrap();
+        assert!(shown(&d, 1).is_empty());
+        assert_eq!(shown(&d, 0).len(), 2);
     }
 
     /// A cycle or a dangling base from a file is cleared with a warning; walks stay bounded before that.

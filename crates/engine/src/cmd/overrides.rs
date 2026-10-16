@@ -266,4 +266,40 @@ mod tests {
         assert_eq!(s.doc().unwrap().doc.page_of_item(c), Some(2));
         s.doc().unwrap().doc.check().unwrap();
     }
+
+    /// A parent item crossing the spine with its centre on the right parent page can be overridden
+    /// from the left page (which shows its left part), by id and with Override All; the copy is
+    /// the whole item, where it showed, and the left page no longer shows the parent's.
+    #[test]
+    fn override_an_item_across_the_spine_from_the_page_without_its_centre() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 3, "facingPages": true})).unwrap();
+        s.execute("layout.parents.new", &json!({"prefix": "B"})).unwrap();
+        // Absolute page 1 (the left page of spread [2 3]) keeps A; page 2 applies B.
+        s.execute("layout.pages.applyParent", &json!({"pages": [2], "parent": "B"})).unwrap();
+        let r = s
+            .execute("frame.create", &json!({"spread": {"kind": "parent", "index": 0}, "rect": [100, 100, 1200, 700], "content": "unassigned"}))
+            .unwrap();
+        let item = ItemId(r["id"].as_u64().unwrap());
+        let shown = |s: &Session, page: usize| -> Vec<ItemId> {
+            s.doc().unwrap().doc.shown_parent_items(SpreadRef::Doc(1), page).iter().map(|p| p.item.id).collect()
+        };
+        assert_eq!(shown(&s, 0), vec![item]);
+        let r = s.execute("layout.overrideParentItems", &json!({"page": 1, "ids": [item.0]})).unwrap();
+        let copy = ItemId(r["ids"][0].as_u64().unwrap());
+        let d = s.doc().unwrap().doc.clone();
+        assert_eq!(d.item(copy).unwrap().overrides, Some(item));
+        let b = d.item(copy).unwrap().bounds();
+        assert!((b.x0 - 100.0).abs() < 1e-9 && (b.x1 - 1200.0).abs() < 1e-9, "{b:?}");
+        assert_eq!(d.spreads[1].pages[0].overridden, vec![item]);
+        assert!(shown(&s, 0).is_empty());
+        // Undone, Override All on the left page picks it up too.
+        s.execute("edit.undo", &json!({})).unwrap();
+        let r = s.execute("layout.overrideParentItems", &json!({"page": 1})).unwrap();
+        let d = s.doc().unwrap().doc.clone();
+        let copies: Vec<Option<ItemId>> =
+            r["ids"].as_array().unwrap().iter().map(|v| d.item(ItemId(v.as_u64().unwrap())).unwrap().overrides).collect();
+        assert_eq!(copies, vec![Some(item)]);
+        d.check().unwrap();
+    }
 }

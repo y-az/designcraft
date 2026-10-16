@@ -234,7 +234,13 @@ impl ToolContext<'_> {
                 let it = s.item;
                 let layer = self.doc.layer(it.layer);
                 let at = sp - designcraft_geom::Vec2::new(s.dx, 0.0);
-                !it.locked && !it.hidden && !layer.is_some_and(|l| !l.visible || l.locked) && designcraft_doc::edit_hit(it, at, self.tol(4.0))
+                // An item cut at the spine is hit only on this page's side of it.
+                let inside = s.clip_x.is_none_or(|(x0, x1)| sp.x >= x0 && sp.x <= x1);
+                !it.locked
+                    && !it.hidden
+                    && inside
+                    && !layer.is_some_and(|l| !l.visible || l.locked)
+                    && designcraft_doc::edit_hit(it, at, self.tol(4.0))
             })
             .map(|s| (page, s.item.id))
     }

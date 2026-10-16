@@ -627,7 +627,20 @@ impl Exporter<'_> {
             }
             for (pi, items) in shown.iter().enumerate() {
                 for p in items.iter().filter(|p| p.item.layer == layer.id) {
-                    self.top_item(s, p.item, Affine::translate((p.dx, 0.0)), Some(first + pi), true);
+                    let xf = Affine::translate((p.dx, 0.0));
+                    // Crossing the spine: cut to this page's side.
+                    let cut = p.clip_x.and_then(|(x0, x1)| {
+                        let b = sp.bounds();
+                        to_path(&Rect::new(x0, b.y0 - 1.0e4, x1, b.y1 + 1.0e4).to_path(0.1))
+                    });
+                    match cut {
+                        Some(c) => {
+                            s.push_clip_path(&c, &FillRule::NonZero);
+                            self.top_item(s, p.item, xf, Some(first + pi), true);
+                            s.pop();
+                        }
+                        None => self.top_item(s, p.item, xf, Some(first + pi), true),
+                    }
                 }
             }
             for it in &sp.items {

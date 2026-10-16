@@ -106,6 +106,27 @@ fn parent_hit_reaches_base_parent_items_topmost_first() {
     assert_eq!(hit(&d, 120.0, 120.0), None);
 }
 
+/// A parent frame crossing the spine, centred on the right parent page, is hit from the left
+/// page applying that parent, and not on the right page once it applies another parent.
+#[test]
+fn parent_hit_reaches_an_item_across_the_spine_from_either_side() {
+    let mut d = Document::new(&NewDocument { pages: 3, ..Default::default() });
+    let lid = d.default_layer();
+    let (item, _) = d.add_text_frame(SpreadRef::Parent(0), Rect::new(100.0, 100.0, 1200.0, 700.0), lid, "x", ParaFormat::default()).unwrap();
+    let hit = |d: &Document, x: f64, y: f64| {
+        let (s, c, l) = (Selection::default(), Cache::new(), CanvasLayout::new(d, false));
+        let off = l.xf(SpreadRef::Doc(1)).translation();
+        ctx(d, &s, &c, &l).hit_parent_on_page(Point::new(x + off.x, y + off.y))
+    };
+    // Spread [2 3]: absolute pages 1 (left, x 0–612) and 2 (right).
+    assert_eq!(hit(&d, 300.0, 400.0), Some((1, item)));
+    assert_eq!(hit(&d, 900.0, 400.0), Some((2, item)));
+    let b = d.add_parent("B", "Opening", 1, 12.0, designcraft_doc::Margins::uniform(36.0));
+    d.apply_parent(&[2], Some(b)).unwrap();
+    assert_eq!(hit(&d, 300.0, 400.0), Some((1, item)));
+    assert_eq!(hit(&d, 900.0, 400.0), None);
+}
+
 #[test]
 fn gradient_tool_drag_sets_the_vector() {
     let mut d = Document::new(&NewDocument::default());

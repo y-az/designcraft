@@ -705,9 +705,16 @@ fn draw_frames(app: &DesignApp, painter: &egui::Painter, xf: &Xf, doc: &Document
             for shown in doc.shown_parent_items(slot.spread, pi) {
                 let it = shown.item;
                 let col = doc.layer(it.layer).map(|l| c32(l.color)).unwrap_or(Color32::LIGHT_BLUE);
+                // Cut at the spine: only the edges on this page's side.
+                let clipped = shown.clip_x.map(|(x0, x1)| {
+                    let b = sp.bounds();
+                    let r = Rect::from_two_pos(xf.to_screen(a * Point::new(x0, b.y0 - 1.0e4)), xf.to_screen(a * Point::new(x1, b.y1 + 1.0e4)));
+                    painter.with_clip_rect(r.intersect(painter.clip_rect()))
+                });
+                let p = clipped.as_ref().unwrap_or(painter);
                 for poly in path_screen(it, xf, a * Affine::translate((shown.dx, 0.0))) {
                     for w in poly.windows(2) {
-                        dashed(painter, w[0], w[1], Stroke::new(hair(painter), col.gamma_multiply(0.8)), 2.0, 2.0);
+                        dashed(p, w[0], w[1], Stroke::new(hair(p), col.gamma_multiply(0.8)), 2.0, 2.0);
                     }
                 }
             }
